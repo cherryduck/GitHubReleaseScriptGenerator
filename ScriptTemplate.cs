@@ -214,18 +214,18 @@ function Get-LatestReleaseRobust {
 }
 
 # -------------------------------
-# Asset Selection (Windows archives)
+# Asset Selection (Windows archives or portable EXEs)
 # -------------------------------
 function Select-WindowsAsset {
     param([Parameter(Mandatory)]$release)
 
     $assets = @($release.assets | Where-Object {
-        $_.name -match '(?i)\.(zip|7z)$' -and
+        $_.name -match '(?i)\.(zip|7z|exe)$' -and
         $_.name -notmatch '(?i)source code'
     })
 
     if ($assets.Count -eq 0) {
-        throw "No downloadable .zip/.7z assets found on the selected release."
+        throw "No downloadable .zip/.7z/.exe assets found on the selected release."
     }
 
     if (Test-Path -LiteralPath $assetPrefFilePath) {
@@ -239,7 +239,7 @@ function Select-WindowsAsset {
         }
     }
 
-    $windowsAssets = @($assets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86)' })
+    $windowsAssets = @($assets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86|portable)' })
 
     if ($windowsAssets.Count -eq 1) {
         Log "Auto-selected Windows asset: $($windowsAssets[0].name)"
@@ -262,7 +262,7 @@ function Select-WindowsAsset {
         return $selected
     }
 
-    Log "No clear Windows asset; using first archive asset: $($assets[0].name)"
+    Log "No clear Windows/portable asset; using first matching asset: $($assets[0].name)"
     return $assets[0]
 }
 
@@ -549,6 +549,43 @@ function Extract-ReleaseArchive {
     }
 }
 
+
+function Install-ReleaseAsset {
+    param(
+        [Parameter(Mandatory)][string]$DownloadedAssetPath,
+        [Parameter(Mandatory)][string]$AssetName,
+        [Parameter(Mandatory)][string]$DestinationDir
+    )
+
+    $ext = [IO.Path]::GetExtension($AssetName).ToLowerInvariant()
+
+    if ($ext -eq ".zip" -or $ext -eq ".7z") {
+        Log "Installing archive asset."
+        Extract-ReleaseArchive -ArchivePath $DownloadedAssetPath -DestinationDir $DestinationDir
+        Remove-Item -LiteralPath $DownloadedAssetPath -Force -ErrorAction SilentlyContinue
+        Log "Cleaned up archive."
+        return
+    }
+
+    if ($ext -eq ".exe") {
+        Log "Installing portable EXE asset."
+        $destinationPath = Join-Path $DestinationDir $AssetName
+
+        if (Test-Path -LiteralPath $destinationPath) {
+            Log "Replacing existing portable EXE: $destinationPath"
+            Remove-Item -LiteralPath $destinationPath -Force
+        }
+
+        Move-Item -LiteralPath $DownloadedAssetPath -Destination $destinationPath -Force
+        Set-Content -LiteralPath $launcherPrefFilePath -Value $destinationPath
+        Log "Portable EXE installed: $destinationPath"
+        Log "Launcher preference updated: $destinationPath"
+        return
+    }
+
+    throw "Unsupported asset extension: $ext"
+}
+
 # -------------------------------
 # Version Tracking + Update
 # -------------------------------
@@ -586,17 +623,12 @@ if ($current -lt $latest) {
     Log "Downloading from: $url"
 
     $ext = [IO.Path]::GetExtension($asset.name).ToLowerInvariant()
-    $archivePath = Join-Path $targetDirectory ("latest_release" + $ext)
+    $downloadPath = Join-Path $targetDirectory ("latest_release" + $ext)
 
-    Log "Saving to: $archivePath"
-    Invoke-WebRequest -Uri $url -OutFile $archivePath -Headers @{ "User-Agent" = "UpdaterScript" }
+    Log "Saving to: $downloadPath"
+    Invoke-WebRequest -Uri $url -OutFile $downloadPath -Headers @{ "User-Agent" = "UpdaterScript" }
 
-    Log "Extracting..."
-    Extract-ReleaseArchive -ArchivePath $archivePath -DestinationDir $targetDirectory
-
-    Log "Extraction complete."
-    Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-    Log "Cleaned up archive."
+    Install-ReleaseAsset -DownloadedAssetPath $downloadPath -AssetName $asset.name -DestinationDir $targetDirectory
 
     Set-Content -LiteralPath $versionFilePath -Value ($latest.ToString("o"))
     Log "Updated version file: $versionFilePath"
